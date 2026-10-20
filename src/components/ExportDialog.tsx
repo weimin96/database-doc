@@ -1,4 +1,4 @@
-import type { DocumentOptions } from "../lib/types";
+import type { DocumentOptions, TemplateEntry } from "../lib/types";
 import { FormInput } from "./FormInput";
 import { Alert,AlertDescription } from "./ui/alert";
 import { Button } from "./ui/button";
@@ -12,6 +12,7 @@ DialogTitle,
 } from "./ui/dialog";
 import { Field,FieldGroup,FieldLabel } from "./ui/field";
 import { Textarea } from "./ui/textarea";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 export function ExportDialog({
   open,
   onOpenChange,
@@ -21,6 +22,10 @@ export function ExportDialog({
   busy,
   count,
   error,
+  templates,
+  templateId,
+  onTemplateChange,
+  onManageTemplates,
 }: {
   open: boolean;
   onOpenChange: (value: boolean) => void;
@@ -30,6 +35,10 @@ export function ExportDialog({
   busy: boolean;
   count: number;
   error: string;
+  templates: TemplateEntry[];
+  templateId: string;
+  onTemplateChange: (value: string) => void;
+  onManageTemplates: () => void;
 }) {
   return (
     <Dialog
@@ -58,6 +67,16 @@ export function ExportDialog({
         >
           <fieldset disabled={busy} className="flex flex-col gap-5">
             <FieldGroup>
+              <Field>
+                <div className="flex items-center justify-between gap-2"><FieldLabel>导出模板</FieldLabel>
+                  <Button variant="ghost" size="sm" type="button" onClick={onManageTemplates}>管理模板</Button></div>
+                <Select value={templateId} onValueChange={onTemplateChange}>
+                  <SelectTrigger aria-label="导出模板"><SelectValue /></SelectTrigger>
+                  <SelectContent><SelectGroup>{templates.map((template) => (
+                    <SelectItem value={template.id} key={template.id}>{template.name}</SelectItem>
+                  ))}</SelectGroup></SelectContent>
+                </Select>
+              </Field>
               <FormInput
                 label="项目名称"
                 required

@@ -1,6 +1,7 @@
 mod ai;
 mod database;
 mod models;
+mod workspace;
 use models::*;
 use tauri::Manager;
 
@@ -156,7 +157,13 @@ pub fn run() {
             load_preferences,
             save_preferences,
             list_ai_models,
-            test_ai_connection
+            test_ai_connection,
+            workspace::load_workspace,
+            workspace::save_workspace,
+            workspace::list_templates,
+            workspace::import_template,
+            workspace::read_template,
+            workspace::delete_template
         ])
         .run(tauri::generate_context!())
         .expect("桌面应用启动失败");

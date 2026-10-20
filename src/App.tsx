@@ -5,6 +5,8 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
+  FolderOpen,
+  Files,
   RefreshCw,
   Settings2,
   Unplug,
@@ -12,6 +14,8 @@ import {
 import { AiDialog } from "./components/AiDialog";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { ExportDialog } from "./components/ExportDialog";
+import { ProjectDialog } from "./components/ProjectDialog";
+import { TemplateDialog } from "./components/TemplateDialog";
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert";
 import { Button } from "./components/ui/button";
 import { command, desktop } from "./lib/api";
@@ -24,11 +28,25 @@ export default function App() {
   const workspace = useDatabaseWorkspace();
   const {
     preferences,
+    project,
+    projects,
+    projectReady,
+    projectOpen,
+    setProjectOpen,
+    templateOpen,
+    setTemplateOpen,
+    templates,
+    createProject,
+    switchProject,
+    removeProject,
+    importCustomTemplate,
+    deleteCustomTemplate,
+    downloadBuiltinTemplate,
+    updateCurrent,
     tables,
     setTables,
     connection,
     setConnection,
-    setSelected,
     busy,
     notice,
     setNotice,
@@ -66,6 +84,13 @@ export default function App() {
           </div>
         </div>
         <div className="header-actions">
+          <Button variant="outline" onClick={() => setProjectOpen(true)} disabled={!!busy || !projectReady}>
+            <FolderOpen data-icon="inline-start" />
+            <span className="header-project-name">{project?.name || "未命名项目"}</span>
+          </Button>
+          <Button variant="ghost" onClick={() => setTemplateOpen(true)} disabled={!!busy || !projectReady}>
+            <Files data-icon="inline-start" />模板
+          </Button>
           <Button
             variant="ghost"
             onClick={() => setAiOpen(true)}
@@ -77,7 +102,7 @@ export default function App() {
           <Button
             variant="outline"
             onClick={() => setConnectOpen(true)}
-            disabled={!!busy}
+            disabled={!!busy || !projectReady}
           >
             <Plus data-icon="inline-start" />
             {connection ? "切换连接" : "连接数据库"}
@@ -132,7 +157,6 @@ export default function App() {
                   await command("disconnect_database");
                   setConnection("");
                   setTables([]);
-                  setSelected([]);
                   setDrafts([]);
                   setResults([]);
                 })
@@ -182,6 +206,7 @@ export default function App() {
         open={connectOpen}
         onOpenChange={setConnectOpen}
         saved={preferences.connections}
+        preferredId={project?.connectionId}
         error={notice?.error ? notice.text : ""}
         busy={!!busy}
         onConnect={connect}
@@ -203,6 +228,31 @@ export default function App() {
         busy={!!busy}
         count={chosen.length}
         error={notice?.error ? notice.text : ""}
+        templates={templates}
+        templateId={project?.templateId || "builtin"}
+        onTemplateChange={(id) => updateCurrent((item) => ({ ...item, templateId: id }))}
+        onManageTemplates={() => { setExportOpen(false); setTemplateOpen(true); }}
+      />
+      <ProjectDialog
+        open={projectOpen}
+        onOpenChange={setProjectOpen}
+        projects={projects}
+        current={project}
+        busy={!!busy}
+        onCreate={createProject}
+        onSwitch={switchProject}
+        onSave={(value) => updateCurrent((item) => ({ ...item, ...value }))}
+        onRemove={removeProject}
+      />
+      <TemplateDialog
+        open={templateOpen}
+        onOpenChange={setTemplateOpen}
+        templates={templates}
+        activeId={project?.templateId || "builtin"}
+        onSelect={(id) => updateCurrent((item) => ({ ...item, templateId: id }))}
+        onImport={importCustomTemplate}
+        onDelete={deleteCustomTemplate}
+        onDownload={downloadBuiltinTemplate}
       />
       <ConfirmationDialog workspace={workspace} />
     </div>

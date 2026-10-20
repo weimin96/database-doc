@@ -34,6 +34,22 @@ export interface DocumentOptions {
   date: string;
   overview: string;
 }
+export interface Project extends Omit<DocumentOptions, "projectName"> {
+  id: string;
+  name: string;
+  connectionId: string | null;
+  templateId: string;
+  selectedTables: string[];
+}
+export interface WorkspaceStore {
+  projects: Project[];
+  activeProjectId: string;
+}
+export interface TemplateEntry {
+  id: string;
+  name: string;
+  builtin: boolean;
+}
 export interface AiSettings {
   baseUrl: string;
   model: string;

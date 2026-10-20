@@ -27,6 +27,7 @@ export function ConnectionDialog({
   open,
   onOpenChange,
   saved,
+  preferredId,
   error,
   busy,
   onConnect,
@@ -34,6 +35,7 @@ export function ConnectionDialog({
   open: boolean;
   onOpenChange: (value: boolean) => void;
   saved: SavedConnection[];
+  preferredId?: string | null;
   error: string;
   busy: boolean;
   onConnect: (
@@ -52,6 +54,14 @@ export function ConnectionDialog({
   });
   const [savedId, setSavedId] = useState("new");
   const [save, setSave] = useState(true);
+  useEffect(() => {
+    if (!open || !preferredId) return;
+    const profile = saved.find((item) => item.id === preferredId);
+    if (profile) {
+      setSavedId(profile.id);
+      setOptions({ ...profile, password: "" });
+    }
+  }, [open, preferredId, saved]);
   useEffect(() => {
     if (!open) setOptions((previous) => ({ ...previous, password: "" }));
   }, [open]);

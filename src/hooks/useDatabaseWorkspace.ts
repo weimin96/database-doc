@@ -1,8 +1,9 @@
-import { save } from "@tauri-apps/plugin-dialog";
-import { writeFile } from "@tauri-apps/plugin-fs";
-import { useEffect, useRef, useState } from "react";
+import { open, save } from "@tauri-apps/plugin-dialog";
+import { readFile, writeFile } from "@tauri-apps/plugin-fs";
+import { useEffect, useRef, useState, type SetStateAction } from "react";
 import templateUrl from "../../templates/database-design.template.docx?url";
 import type { ReviewDraft } from "../components/CommentReview";
+import { validateTemplate } from "../lib/template";
 import {
   command,
   desktop,
@@ -15,6 +16,9 @@ import {
   type ConnectionOptions,
   type DocumentOptions,
   type Draft,
+  type Project,
+  type TemplateEntry,
+  type WorkspaceStore,
   isMissing,
   type TableInfo,
   tableKey,
@@ -27,11 +31,31 @@ const initialOptions: DocumentOptions = {
   date: new Date().toLocaleDateString("sv-SE"),
   overview: "",
 };
+const newProject = (): Project => ({
+  name: "",
+  organization: initialOptions.organization,
+  version: initialOptions.version,
+  date: initialOptions.date,
+  overview: initialOptions.overview,
+  id: crypto.randomUUID(),
+  connectionId: null,
+  templateId: "builtin",
+  selectedTables: [],
+});
 export function useDatabaseWorkspace() {
   const [preferences, setPreferences] = useState<Preferences>(emptyPreferences);
   const [tables, setTables] = useState<TableInfo[]>([]);
   const [connection, setConnection] = useState("");
-  const [selected, setSelected] = useState<string[]>([]);
+  const [selected, setSelectedState] = useState<string[]>([]);
+  const selectionRef = useRef<string[]>([]);
+  const [projectStore, setProjectStore] = useState<WorkspaceStore>({ projects: [], activeProjectId: "" });
+  const projectStoreRef = useRef(projectStore);
+  const saveQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const [projectReady, setProjectReady] = useState(false);
+  const [projectOpen, setProjectOpen] = useState(false);
+  const [templateOpen, setTemplateOpen] = useState(false);
+  const [templates, setTemplates] = useState<TemplateEntry[]>([{ id: "builtin", name: "数据库设计说明书（内置）", builtin: true }]);
+  const [connectedProfileId, setConnectedProfileId] = useState<string | null>(null);
   const [active, setActive] = useState("");
   const [schema, setSchema] = useState("");
   const [search, setSearch] = useState("");
@@ -52,7 +76,10 @@ export function useDatabaseWorkspace() {
   const [review, setReview] = useState(false);
   const [confirm, setConfirm] = useState<"generate" | "write" | null>(null);
   const [sidebar, setSidebar] = useState(true);
-  const [documentOptions, setDocumentOptions] = useState(initialOptions);
+  const project = projectStore.projects.find((item) => item.id === projectStore.activeProjectId);
+  const documentOptions: DocumentOptions = project
+    ? { projectName: project.name, organization: project.organization, version: project.version, date: project.date, overview: project.overview }
+    : initialOptions;
   const [outputPath, setOutputPath] = useState("");
   const [results, setResults] = useState<WriteResult[]>([]);
   const cancelled = useRef(false);
@@ -99,6 +126,98 @@ export function useDatabaseWorkspace() {
   function report(error: unknown) {
     setNotice({ error: true, text: messageOf(error) });
   }
+  function updateStore(change: (state: WorkspaceStore) => WorkspaceStore) {
+    const next = change(projectStoreRef.current);
+    projectStoreRef.current = next;
+    setProjectStore(next);
+    const saving = saveQueue.current
+      .catch(() => undefined)
+      .then(() => command<void>("save_workspace", { workspace: next }));
+    saveQueue.current = saving.catch(report);
+    return saving;
+  }
+  function updateCurrent(change: (project: Project) => Project) {
+    return updateStore((state) => ({
+      ...state,
+      projects: state.projects.map((item) => item.id === state.activeProjectId ? change(item) : item),
+    }));
+  }
+  function setSelected(value: SetStateAction<string[]>) {
+    const next = typeof value === "function" ? value(selectionRef.current) : value;
+    selectionRef.current = next;
+    setSelectedState(next);
+    updateCurrent((item) => ({ ...item, selectedTables: next }));
+  }
+  function restoreSelection(keys: string[]) {
+    selectionRef.current = keys;
+    setSelectedState(keys);
+  }
+  function setDocumentOptions(value: DocumentOptions) {
+    updateCurrent((item) => ({ ...item, name: value.projectName, organization: value.organization, version: value.version, date: value.date, overview: value.overview }));
+  }
+  async function createProject() {
+    await run("创建项目", async () => {
+      // 切换项目前断开旧会话，避免误将不同数据库中的同名表导出。
+      if (connection) await command("disconnect_database");
+      setConnection(""); setConnectedProfileId(null); setTables([]);
+      setDrafts([]); setResults([]); setActive("");
+      const created = newProject();
+      await updateStore((state) => ({ projects: [...state.projects, created], activeProjectId: created.id }));
+      restoreSelection([]);
+    });
+  }
+  async function switchProject(id: string) {
+    if (id === projectStoreRef.current.activeProjectId) return;
+    await run("切换项目", async () => {
+      if (connection) await command("disconnect_database");
+      setConnection("");
+      setConnectedProfileId(null);
+      setTables([]);
+      setActive("");
+      setDrafts([]);
+      setResults([]);
+      const next = projectStoreRef.current.projects.find((item) => item.id === id);
+      if (!next) throw new Error("项目不存在");
+      await updateStore((state) => ({ ...state, activeProjectId: id }));
+      restoreSelection([]);
+      setProjectOpen(false);
+    });
+  }
+  async function removeProject(id: string) {
+    if (projectStoreRef.current.projects.length <= 1) throw new Error("至少保留一个项目");
+    if (projectStoreRef.current.activeProjectId === id && connection) {
+      await command("disconnect_database");
+      setConnection(""); setTables([]); setConnectedProfileId(null);
+      restoreSelection([]); setDrafts([]); setResults([]);
+    }
+    await updateStore((state) => {
+      const projects = state.projects.filter((item) => item.id !== id);
+      return { projects, activeProjectId: state.activeProjectId === id ? projects[0].id : state.activeProjectId };
+    });
+  }
+  async function importCustomTemplate() {
+    const path = await open({ multiple: false, filters: [{ name: "Word 模板", extensions: ["docx"] }] });
+    if (!path) return;
+    const bytes = await readFile(path);
+    validateTemplate(bytes);
+    const name = path.split(/[/\\]/).pop()?.replace(/\.docx$/i, "") || "自定义模板";
+    const item = await command<TemplateEntry>("import_template", { name, bytes: Array.from(bytes) });
+    setTemplates((items) => [...items, item]);
+    await updateCurrent((project) => ({ ...project, templateId: item.id }));
+  }
+  async function deleteCustomTemplate(id: string) {
+    if (id === "builtin") throw new Error("内置模板不能删除");
+    // 删除前更新项目引用，保证下次启动不会引用已删除的模板。
+    await updateStore((state) => ({ ...state, projects: state.projects.map((item) => item.templateId === id ? { ...item, templateId: "builtin" } : item) }));
+    await command("delete_template", { id });
+    setTemplates((items) => items.filter((item) => item.id !== id));
+  }
+  async function downloadBuiltinTemplate() {
+    const response = await fetch(templateUrl);
+    if (!response.ok) throw new Error("读取内置模板失败");
+    const target = await save({ defaultPath: "数据库设计说明书-模板.docx", filters: [{ name: "Word 模板", extensions: ["docx"] }] });
+    if (target) await writeFile(target, new Uint8Array(await response.arrayBuffer()));
+  }
   async function run(label: string, action: () => Promise<void>) {
     if (task.current) return false;
     task.current = true;
@@ -124,6 +243,18 @@ export function useDatabaseWorkspace() {
         setAi({ baseUrl: value.aiUrl, model: value.aiModel, apiKey: "" });
       })
       .catch(report);
+    command<WorkspaceStore>("load_workspace")
+      .then(async (loaded) => {
+        const projects = loaded.projects.length ? loaded.projects : [newProject()];
+        const activeProjectId = projects.some((item) => item.id === loaded.activeProjectId) ? loaded.activeProjectId : projects[0].id;
+        const next = { projects, activeProjectId };
+        if (!loaded.projects.length) await command("save_workspace", { workspace: next });
+        projectStoreRef.current = next;
+        setProjectStore(next);
+        setProjectReady(true);
+      })
+      .catch(report);
+    command<TemplateEntry[]>("list_templates").then(setTemplates).catch(report);
   }, []);
   function toggle(table: TableInfo) {
     const key = tableKey(table);
@@ -144,13 +275,18 @@ export function useDatabaseWorkspace() {
       });
       setTables(loaded);
       setConnection(`${options.host}:${options.port} / ${options.database}`);
+      setConnectedProfileId(saveConnection ? id : null);
       setDrafts([]);
       setResults([]);
-      setSelected([]);
+      const savedSelection = saveConnection && projectStoreRef.current.projects.find((item) => item.id === projectStoreRef.current.activeProjectId)?.connectionId === id
+        ? projectStoreRef.current.projects.find((item) => item.id === projectStoreRef.current.activeProjectId)?.selectedTables ?? [] : [];
+      const restored = savedSelection.filter((key) => loaded.some((table) => tableKey(table) === key));
+      restoreSelection(restored);
       setActive(loaded[0] ? tableKey(loaded[0]) : "");
       setSchema("");
       setReview(false);
       setConnectOpen(false);
+      await updateCurrent((item) => ({ ...item, connectionId: saveConnection ? id : null, selectedTables: restored }));
       if (saveConnection) {
         const { password: _, ...safe } = options;
         const entry = {
@@ -335,11 +471,16 @@ export function useDatabaseWorkspace() {
       const ordered = chosen.map((table) =>
         fresh.find((value) => value.oid === table.oid)!,
       );
-      const response = await fetch(templateUrl).catch(() => {
-        throw new Error("无法读取内置 Word 模板，请重新构建应用");
-      });
-      if (!response.ok) throw new Error("内置模板读取失败");
-      const template = await response.arrayBuffer();
+      if (!project) throw new Error("请先创建项目");
+      let template: ArrayBuffer;
+      if (project.templateId === "builtin") {
+        const response = await fetch(templateUrl).catch(() => { throw new Error("无法读取内置 Word 模板"); });
+        if (!response.ok) throw new Error("内置模板读取失败");
+        template = await response.arrayBuffer();
+      } else {
+        const bytes = await command<number[]>("read_template", { id: project.templateId });
+        template = new Uint8Array(bytes).buffer;
+      }
       const bytes = await new Promise<Uint8Array>((resolve, reject) => {
         const worker = new Worker(
           new URL("../lib/document.worker.ts", import.meta.url),
@@ -383,6 +524,23 @@ export function useDatabaseWorkspace() {
 
   return {
     preferences,
+    project,
+    projects: projectStore.projects,
+    projectReady,
+    projectOpen,
+    setProjectOpen,
+    templateOpen,
+    setTemplateOpen,
+    templates,
+    connectedProfileId,
+    createProject,
+    switchProject,
+    removeProject,
+    importCustomTemplate,
+    deleteCustomTemplate,
+    downloadBuiltinTemplate,
+    updateCurrent,
+    restoreSelection,
     tables,
     setTables,
     connection,
