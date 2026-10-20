@@ -1,0 +1,11 @@
+{
+  "identifier": "main-capability",
+  "description": "主窗口原生保存对话框与用户所选文件的写入权限",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:allow-save",
+    "fs:allow-write-file",
+    "opener:allow-reveal-item-in-dir"
+  ]
+}
