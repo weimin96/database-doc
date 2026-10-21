@@ -27,6 +27,19 @@ npm run tauri -- build --bundles app
 
 输出：`src-tauri/target/release/bundle/macos/Database Doc.app`。当前面向本机架构构建，尚未配置 Developer ID 签名和 Apple 公证。
 
+## 手动发布 Release
+
+将代码推送到 `main` 后，进入 GitHub 仓库的 **Actions → 手动发布 macOS → Run workflow**，选择 `main` 并运行。
+
+- 读取项目版本创建 `v版本号` 标签，发布 Apple Silicon ZIP 和 `SHA256SUMS.txt`。ZIP 解压后可直接获得 `.app`。
+- 发布前确保 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 及两份锁文件中的项目版本一致。已有同名标签或 Release 时停止，不覆盖旧版本。
+- 仅手动运行，使用单个 `macos-15` ARM64 标准 Runner，45 分钟超时；不构建 Intel 或 Universal 版本。
+- Checkout v7.0.1、Setup Node v7.1.0、Cache v6.1.0 均固定到完整提交 SHA，运行时为 Node 24。Rust 使用 Runner 预装版本，不重复安装。
+- 只缓存 Cargo 下载和 release 依赖编译结果，排除项目自身编译结果；缓存按编译器、Xcode、Cargo 依赖和构建配置区分，单纯升级项目版本不会产生重复缓存。不缓存 `node_modules`、调试构建或安装包。
+- 产物直接上传 Release，不额外上传 Actions Artifact；只需自带的 `GITHUB_TOKEN`，无需配置 PAT。构建启用免费的 ad-hoc 签名，完整应用通过签名校验后才压缩；未配置 Developer ID 签名或 Apple 公证。
+
+公开仓库使用标准 Runner 的构建分钟免费；缓存仍使用仓库的默认额度，本工作流不修改付费设置。规则见 [GitHub Actions 计费](https://docs.github.com/en/billing/concepts/product-billing/github-actions)与 [Release 存储说明](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases#storage-and-bandwidth-quotas)。
+
 ## 验证
 
 ```bash

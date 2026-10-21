@@ -1,0 +1,145 @@
+name: 手动发布 macOS
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-macos
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: 构建并发布 Apple Silicon 版本
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      CARGO_INCREMENTAL: '0'
+      GH_REPO: ${{ github.repository }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1，Node 24
+        with:
+          persist-credentials: false
+
+      - name: 检查版本与编译环境
+        id: release
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, re, tomllib
+          from pathlib import Path
+
+          package = json.loads(Path('package.json').read_text())
+          npm_lock = json.loads(Path('package-lock.json').read_text())
+          config = json.loads(Path('src-tauri/tauri.conf.json').read_text())
+          cargo = tomllib.loads(Path('src-tauri/Cargo.toml').read_text())
+          cargo_lock = tomllib.loads(Path('src-tauri/Cargo.lock').read_text())
+          version = config['version']
+          versions = [package['version'], npm_lock['version'],
+                      npm_lock['packages']['']['version'], cargo['package']['version']]
+          versions += [entry['version'] for entry in cargo_lock['package']
+                       if entry['name'] == cargo['package']['name']]
+          if not re.fullmatch(r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)', version):
+              raise SystemExit('版本号须为正式版本，例如 0.1.0')
+          if any(value != version for value in versions):
+              raise SystemExit('package.json、Tauri、Cargo 及锁文件的项目版本不一致')
+          # 仅升级应用版本时继续复用依赖缓存。
+          dependencies = [entry for entry in cargo_lock['package']
+                          if entry['name'] != cargo['package']['name']]
+          del cargo['package']['version']
+          cache_data = json.dumps([cargo, dependencies], sort_keys=True).encode()
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              print(f'version={version}', file=output)
+              print(f'tag=v{version}', file=output)
+              print(f'dependencies={hashlib.sha256(cache_data).hexdigest()}', file=output)
+          PY
+          if [[ "$(uname -m)" != arm64 ]]; then
+            echo '构建环境必须为 Apple Silicon' >&2
+            exit 1
+          fi
+          rustc --version
+          cargo --version
+          compiler=$( { rustc -vV; xcodebuild -version; } | shasum -a 256 | cut -d ' ' -f 1)
+          echo "compiler=$compiler" >> "$GITHUB_OUTPUT"
+
+      - name: 拒绝重复发布
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          existing_tags=$(gh api "repos/$GH_REPO/git/matching-refs/tags/$RELEASE_TAG" \
+            | jq --arg tag "$RELEASE_TAG" 'map(select(.ref == ("refs/tags/" + $tag))) | length')
+          existing_releases=$(gh api --paginate "repos/$GH_REPO/releases?per_page=100" \
+            | jq -r --arg tag "$RELEASE_TAG" '.[] | select(.tag_name == $tag) | .tag_name')
+          if [[ "$existing_tags" != 0 || -n "$existing_releases" ]]; then
+            echo "版本 $RELEASE_TAG 已有标签或 Release，请先更新项目版本" >&2
+            exit 1
+          fi
+
+      - name: 设置 Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0，Node 24
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: 缓存 Rust 依赖
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0，Node 24
+        with:
+          key: release-macos-arm64-v1-${{ steps.release.outputs.compiler }}-${{ steps.release.outputs.dependencies }}
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            src-tauri/target/release/deps
+            src-tauri/target/release/build
+            src-tauri/target/release/.fingerprint
+            !src-tauri/target/release/deps/*database_doc*
+            !src-tauri/target/release/build/database-doc-*
+            !src-tauri/target/release/.fingerprint/database-doc-*
+
+      - name: 安装前端依赖并验证模板
+        run: |
+          npm ci --no-audit --no-fund
+          node scripts/verify-comment-scan.mjs
+          npm run template:verify
+
+      - name: 构建应用
+        run: npm run tauri -- build --ci --bundles app -- --locked
+
+      - name: 压缩应用并生成校验文件
+        env:
+          APP_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          app='src-tauri/target/release/bundle/macos/Database Doc.app'
+          release_dir="$RUNNER_TEMP/release"
+          mkdir -p "$release_dir"
+          codesign --force --sign - "$app"
+          codesign --verify --deep --strict "$app"
+          ditto -c -k --sequesterRsrc --keepParent "$app" \
+            "$release_dir/Database-Doc_${APP_VERSION}_macos-arm64.zip"
+          cd "$release_dir"
+          shasum -a 256 -- ./*.zip > SHA256SUMS.txt
+
+      - name: 发布 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP_VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          release_dir="$RUNNER_TEMP/release"
+          cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
+          macOS Apple Silicon（M 系列芯片）版本。
+
+          下载 ZIP 并解压，将 Database Doc.app 拖入“应用程序”。
+          此版本未使用 Developer ID 签名与 Apple 公证。
+          SHA256SUMS.txt 可用于核对下载文件的完整性。
+          NOTES
+          gh release create "$RELEASE_TAG" "$release_dir/"*.zip "$release_dir/SHA256SUMS.txt" \
+            --target "$GITHUB_SHA" --title "Database Doc $APP_VERSION" \
+            --notes-file "$RUNNER_TEMP/release-notes.md"
+          printf '已发布 [%s](%s/%s/releases/tag/%s)。\n' \
+            "$RELEASE_TAG" "$GITHUB_SERVER_URL" "$GH_REPO" "$RELEASE_TAG" >> "$GITHUB_STEP_SUMMARY"
