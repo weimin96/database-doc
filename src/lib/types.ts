@@ -68,6 +68,9 @@ export interface Draft {
   table: string;
   suggestions: Suggestion[];
 }
+export interface ReviewDraft extends Draft {
+  edits: Record<string, { selected: boolean; text: string }>;
+}
 export interface WriteItem {
   id: string;
   comment: string;

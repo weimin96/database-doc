@@ -1,5 +1,6 @@
-import type { TableInfo } from "../lib/types";
-import { isMissing } from "../lib/types";
+import type { ReviewDraft, TableInfo } from "../lib/types";
+import { CommentValue } from "./CommentValue";
+import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
 import {
 Table,
@@ -9,18 +10,41 @@ TableHead,
 TableHeader,
 TableRow,
 } from "./ui/table";
-export function StructureView({ table }: { table: TableInfo }) {
+export function StructureView({ table, draft, busy, currentSelectableCount, currentSelectedCount, onToggleSelect, onChange, onDiscard, onManualSave }: {
+  table: TableInfo;
+  draft?: ReviewDraft;
+  busy: boolean;
+  currentSelectableCount: number;
+  currentSelectedCount: number;
+  onToggleSelect: () => void;
+  onChange: (id: string, target: string, change: { selected?: boolean; text?: string }) => void;
+  onDiscard: (id: string) => void;
+  onManualSave: (table: TableInfo, target: string, text: string) => Promise<boolean>;
+}) {
+  const tableSuggestion = draft?.suggestions.find((suggestion) => suggestion.id === "table");
   return (
     <section className="structure-view">
       <div className="section-heading">
         <div>
           <p className="eyebrow">{table.schema}</p>
           <h2>{table.name}</h2>
-          <p className="table-comment">
-            {table.comment?.trim() || "表注释缺失"}
-          </p>
+          <div className="table-comment">
+            <span className="text-muted-foreground">表注释</span>
+            <CommentValue table={table} target="table" comment={table.comment} draft={draft}
+              suggestion={tableSuggestion} disabled={busy} onChange={onChange} onSave={onManualSave} />
+          </div>
         </div>
-        <Badge variant="secondary">{table.columns.length} 个字段</Badge>
+        <div className="flex shrink-0 flex-col items-end gap-2">
+          <Badge variant="secondary">{table.columns.length} 个字段</Badge>
+          {draft && currentSelectableCount > 0 && (
+            <Button size="sm" variant="outline" disabled={busy} onClick={onToggleSelect}>
+              {currentSelectedCount === currentSelectableCount
+                ? "取消本表勾选"
+                : `勾选本表建议 · ${currentSelectableCount}`}
+            </Button>
+          )}
+          {draft && <Button size="sm" variant="ghost" disabled={busy} onClick={() => onDiscard(draft.id)}>放弃本表建议</Button>}
+        </div>
       </div>
       <Table>
         <TableHeader>
@@ -48,11 +72,9 @@ export function StructureView({ table }: { table: TableInfo }) {
                   .join(" · ") || "—"}
               </TableCell>
               <TableCell className="whitespace-normal min-w-40">
-                {isMissing(column.comment) ? (
-                  <span className="text-muted-foreground">缺失</span>
-                ) : (
-                  column.comment
-                )}
+                <CommentValue table={table} target={`column:${column.position}`} comment={column.comment}
+                  draft={draft} suggestion={draft?.suggestions.find((suggestion) => suggestion.id === `column:${column.position}`)}
+                  disabled={busy} onChange={onChange} onSave={onManualSave} />
               </TableCell>
               <TableCell className="font-mono whitespace-normal max-w-60 break-all">
                 {column.defaultValue || "—"}

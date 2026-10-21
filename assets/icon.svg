@@ -1,1 +1,29 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024"><rect x="40" y="40" width="944" height="944" rx="212" fill="#27665a"/><g fill="none" stroke="#fff" stroke-width="40"><ellipse cx="512" cy="304" rx="222" ry="92"/><path d="M290 304v390c0 123 444 123 444 0V304M290 494c0 123 444 123 444 0"/></g></svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="background" x1="160" y1="80" x2="864" y2="944" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#358674"/>
+      <stop offset="0.55" stop-color="#246457"/>
+      <stop offset="1" stop-color="#143F3A"/>
+    </linearGradient>
+    <linearGradient id="database" x1="264" y1="320" x2="592" y2="704" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#C8E6DA"/>
+    </linearGradient>
+    <linearGradient id="document" x1="576" y1="432" x2="784" y2="784" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#E5F2EC"/>
+    </linearGradient>
+  </defs>
+  <rect x="64" y="76" width="896" height="896" rx="204" fill="#102F2B" opacity="0.16"/>
+  <rect x="64" y="64" width="896" height="896" rx="204" fill="url(#background)"/>
+  <rect x="66" y="66" width="892" height="892" rx="202" fill="none" stroke="#FFFFFF" stroke-opacity="0.16" stroke-width="4"/>
+  <path d="M248 336v318c0 44 81 80 180 80s180-36 180-80V336Z" fill="#123F37" opacity="0.2" transform="translate(0 16)"/>
+  <path d="M248 336v318c0 44 81 80 180 80s180-36 180-80V336Z" fill="url(#database)"/>
+  <path d="M248 440c0 44 81 80 180 80s180-36 180-80M248 548c0 44 81 80 180 80s180-36 180-80" fill="none" stroke="#347765" stroke-width="16"/>
+  <ellipse cx="428" cy="336" rx="180" ry="80" fill="#F6FCF8"/>
+  <ellipse cx="428" cy="336" rx="143" ry="48" fill="#D1E9DE"/>
+  <path d="M554 422h144l106 106v244c0 24-20 44-44 44H554c-24 0-44-20-44-44V466c0-24 20-44 44-44Z" fill="#123F37" opacity="0.22" transform="translate(-12 12)"/>
+  <path d="M566 422h132l106 106v232c0 24-20 44-44 44H566c-24 0-44-20-44-44V466c0-24 20-44 44-44Z" fill="url(#document)"/>
+  <path d="M698 422v74c0 18 14 32 32 32h74Z" fill="#A9D2C0"/>
+  <path d="M580 592h166M580 656h166M580 720h106" fill="none" stroke="#347765" stroke-width="22" stroke-linecap="round"/>
+</svg>

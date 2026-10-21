@@ -7,7 +7,6 @@
     "dialog:allow-save",
     "dialog:allow-open",
     "fs:allow-read-file",
-    "fs:allow-write-file",
-    "opener:allow-reveal-item-in-dir"
+    "fs:allow-write-file"
   ]
 }

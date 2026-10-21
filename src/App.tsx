@@ -31,6 +31,7 @@ export default function App() {
     project,
     projects,
     projectReady,
+    projectSessionReady,
     projectOpen,
     setProjectOpen,
     templateOpen,
@@ -43,6 +44,7 @@ export default function App() {
     deleteCustomTemplate,
     downloadBuiltinTemplate,
     updateCurrent,
+    saveProject,
     tables,
     setTables,
     connection,
@@ -58,6 +60,7 @@ export default function App() {
     setExportOpen,
     ai,
     setDrafts,
+    clearScan,
     sidebar,
     setSidebar,
     documentOptions,
@@ -88,13 +91,13 @@ export default function App() {
             <FolderOpen data-icon="inline-start" />
             <span className="header-project-name">{project?.name || "未命名项目"}</span>
           </Button>
-          <Button variant="ghost" onClick={() => setTemplateOpen(true)} disabled={!!busy || !projectReady}>
+          <Button variant="ghost" onClick={() => setTemplateOpen(true)} disabled={!!busy || !projectSessionReady}>
             <Files data-icon="inline-start" />模板
           </Button>
           <Button
             variant="ghost"
             onClick={() => setAiOpen(true)}
-            disabled={!!busy}
+            disabled={!!busy || !projectSessionReady}
           >
             <Settings2 data-icon="inline-start" />
             AI 设置
@@ -102,14 +105,14 @@ export default function App() {
           <Button
             variant="outline"
             onClick={() => setConnectOpen(true)}
-            disabled={!!busy || !projectReady}
+            disabled={!!busy || !projectSessionReady}
           >
             <Plus data-icon="inline-start" />
             {connection ? "切换连接" : "连接数据库"}
           </Button>
           <Button
             onClick={() => setExportOpen(true)}
-            disabled={!!busy || !chosen.length}
+            disabled={!!busy || !projectSessionReady || !chosen.length}
           >
             <FileDown data-icon="inline-start" />
             导出 Word
@@ -158,6 +161,7 @@ export default function App() {
                   setConnection("");
                   setTables([]);
                   setDrafts([]);
+                  clearScan();
                   setResults([]);
                 })
               }
@@ -238,10 +242,12 @@ export default function App() {
         onOpenChange={setProjectOpen}
         projects={projects}
         current={project}
+        savedConnections={preferences.connections}
         busy={!!busy}
+        requireSelection={!projectSessionReady}
         onCreate={createProject}
         onSwitch={switchProject}
-        onSave={(value) => updateCurrent((item) => ({ ...item, ...value }))}
+        onSave={saveProject}
         onRemove={removeProject}
       />
       <TemplateDialog

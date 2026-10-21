@@ -13,7 +13,7 @@ from docx.oxml.ns import qn
 
 
 ROOT = Path(__file__).resolve().parent.parent
-SOURCE = ROOT / "中规院基于AI的城市设计助手数据库设计文档v0.1.docx"
+SOURCE = ROOT / "templates/source/中规院基于AI的城市设计助手数据库设计文档v0.1.docx"
 TARGET = ROOT / "templates/database-design.template.docx"
 doc = Document(SOURCE)
 body = doc.element.body

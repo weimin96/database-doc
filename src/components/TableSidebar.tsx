@@ -18,7 +18,7 @@ export function TableSidebar({ workspace }: { workspace: DatabaseWorkspace }) {
     search,
     setSearch,
     busy,
-    setReview,
+    drafts,
     visible,
     toggle,
   } = workspace;
@@ -99,16 +99,13 @@ export function TableSidebar({ workspace }: { workspace: DatabaseWorkspace }) {
             />
             <button
               className="table-name"
-              onClick={() => {
-                setActive(tableKey(table));
-                setReview(false);
-              }}
+              onClick={() => setActive(tableKey(table))}
             >
               <span>{table.name}</span>
-              <small>
-                {table.schema} · {table.columnCount} 字段
-              </small>
+              <small>{table.comment?.trim() || <span className="text-muted-foreground">暂无表注释</span>}</small>
             </button>
+            {drafts.some((draft) => draft.schema === table.schema && draft.table === table.name) &&
+              <span className="draft-dot" title="AI 建议待确认" aria-label="AI 建议待确认" />}
             {(isMissing(table.comment) ||
               table.columns.some((column) => isMissing(column.comment))) && (
               <span className="missing-dot" title="存在缺失注释" />

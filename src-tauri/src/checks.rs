@@ -46,6 +46,25 @@ fn missing_and_request_boundary() {
         "/v1/chat/completions"
     );
 }
+
+#[test]
+fn qwen_chat_requests_disable_thinking() {
+    let settings = AiSettings {
+        base_url: "http://127.0.0.1:8000/v1".into(),
+        model: "Qwen3.8-27B".into(),
+        api_key: String::new(),
+    };
+    let mut payload = serde_json::json!({"model":settings.model,"stream":false});
+    ai::disable_thinking(&settings, &mut payload);
+    assert_eq!(payload["chat_template_kwargs"]["enable_thinking"], false);
+    let mut generic = serde_json::json!({"model":"protocol-fixture","stream":false});
+    let other = AiSettings {
+        model: "protocol-fixture".into(),
+        ..settings
+    };
+    ai::disable_thinking(&other, &mut generic);
+    assert!(generic.get("chat_template_kwargs").is_none());
+}
 #[test]
 fn rejects_untrusted_model_targets() {
     let table = sample();
@@ -56,7 +75,16 @@ fn rejects_untrusted_model_targets() {
         &targets
     )
     .is_err());
-    assert!(ai::validate_output(r#"{"suggestions":[{"id":"table","comment":"a","reason":null},{"id":"table","comment":"b","reason":null}]}"#,&table,&targets).is_err());
+    let deduplicated = ai::validate_output(r#"{"suggestions":[{"id":"table","comment":"a","reason":null},{"id":"table","comment":"b","reason":null}]}"#,&table,&targets).unwrap();
+    assert_eq!(
+        deduplicated
+            .iter()
+            .find(|s| s.id == "table")
+            .unwrap()
+            .comment
+            .as_deref(),
+        Some("a")
+    );
     assert!(ai::validate_output(
         r#"{"suggestions":[{"id":"table","comment":" ","reason":null}]}"#,
         &table,
@@ -76,6 +104,31 @@ fn rejects_untrusted_model_targets() {
         .unwrap()
         .reason
         .is_some());
+    let wrapped = ai::validate_output(
+        "<think>不输出</think>\n```json\n{\"suggestions\":[{\"id\":\"id\",\"comment\":\"记录标识\",\"reason\":null,\"extra\":1},{\"id\":\"ignored\",\"comment\":\"多余目标\",\"reason\":null},{\"id\":\"table\",\"comment\":\"项目资料表\",\"reason\":null}]}\n```",
+        &table,
+        &targets,
+    ).unwrap();
+    assert_eq!(wrapped.len(), 2);
+    assert_eq!(
+        wrapped
+            .iter()
+            .find(|s| s.id == "column:1")
+            .unwrap()
+            .comment
+            .as_deref(),
+        Some("记录标识")
+    );
+    assert_eq!(
+        wrapped
+            .iter()
+            .find(|s| s.id == "table")
+            .unwrap()
+            .comment
+            .as_deref(),
+        Some("项目资料表")
+    );
+    assert!(ai::validate_output("```json { not json } ```", &table, &targets).is_err());
 }
 fn stored(snapshot: TableInfo) -> StoredDraft {
     let mut targets = HashMap::new();
@@ -431,7 +484,10 @@ async fn model_discovery_and_connection_probe_contract() {
                 assert_eq!(payload["model"], "model-a");
                 assert_eq!(payload["stream"], false);
                 assert_eq!(payload["messages"].as_array().unwrap().len(), 1);
-                assert_eq!(payload["messages"][0]["content"], "仅回复 OK");
+                assert_eq!(
+                    payload["messages"][0]["content"],
+                    "仅回复 OK，不要输出思考过程。/no_think"
+                );
                 assert!(payload.get("tools").is_none());
             } else {
                 assert_eq!(length, 0);

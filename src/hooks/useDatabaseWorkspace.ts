@@ -2,8 +2,9 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { readFile, writeFile } from "@tauri-apps/plugin-fs";
 import { useEffect, useRef, useState, type SetStateAction } from "react";
 import templateUrl from "../../templates/database-design.template.docx?url";
-import type { ReviewDraft } from "../components/CommentReview";
+import type { ReviewDraft } from "../lib/types";
 import { validateTemplate } from "../lib/template";
+import { matchesScanFilter, summarizeMissingComments, type CommentScanFilter } from "../lib/commentScan";
 import {
   command,
   desktop,
@@ -52,6 +53,7 @@ export function useDatabaseWorkspace() {
   const projectStoreRef = useRef(projectStore);
   const saveQueue = useRef<Promise<unknown>>(Promise.resolve());
   const [projectReady, setProjectReady] = useState(false);
+  const [projectSessionReady, setProjectSessionReady] = useState(false);
   const [projectOpen, setProjectOpen] = useState(false);
   const [templateOpen, setTemplateOpen] = useState(false);
   const [templates, setTemplates] = useState<TemplateEntry[]>([{ id: "builtin", name: "数据库设计说明书（内置）", builtin: true }]);
@@ -59,10 +61,13 @@ export function useDatabaseWorkspace() {
   const [active, setActive] = useState("");
   const [schema, setSchema] = useState("");
   const [search, setSearch] = useState("");
+  const [scanReport, setScanReport] = useState<ReturnType<typeof summarizeMissingComments> | null>(null);
+  const [scanFilter, setScanFilter] = useState<CommentScanFilter>("missing");
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState<{ error: boolean; text: string } | null>(
     null,
   );
+  const [toast, setToast] = useState<string | null>(null);
   const [connectOpen, setConnectOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
@@ -73,17 +78,22 @@ export function useDatabaseWorkspace() {
   });
   const [background, setBackground] = useState("");
   const [drafts, setDrafts] = useState<ReviewDraft[]>([]);
-  const [review, setReview] = useState(false);
+  const [generationScope, setGenerationScope] = useState<"current" | "selected" | "scan" | "failed">("current");
+  const [generationFailures, setGenerationFailures] = useState<{ key: string; label: string; reason: string }[]>([]);
   const [confirm, setConfirm] = useState<"generate" | "write" | null>(null);
   const [sidebar, setSidebar] = useState(true);
   const project = projectStore.projects.find((item) => item.id === projectStore.activeProjectId);
   const documentOptions: DocumentOptions = project
     ? { projectName: project.name, organization: project.organization, version: project.version, date: project.date, overview: project.overview }
     : initialOptions;
-  const [outputPath, setOutputPath] = useState("");
   const [results, setResults] = useState<WriteResult[]>([]);
   const cancelled = useRef(false);
   const task = useRef(false);
+  useEffect(() => {
+    if (!toast) return;
+    const timeout = setTimeout(() => setToast(null), 3200);
+    return () => clearTimeout(timeout);
+  }, [toast]);
   const chosen = selected
     .map((key) => tables.find((table) => tableKey(table) === key))
     .filter((table): table is TableInfo => !!table);
@@ -92,20 +102,28 @@ export function useDatabaseWorkspace() {
       (!schema || table.schema === schema) &&
       `${table.name} ${table.comment ?? ""}`
         .toLowerCase()
-        .includes(search.toLowerCase()),
+        .includes(search.toLowerCase()) &&
+      (!scanReport || scanReport.entries.some((entry) =>
+        entry.key === tableKey(table) && matchesScanFilter(entry, scanFilter))),
   );
   const current = tables.find((table) => tableKey(table) === active);
-  const eligible = chosen.filter(
-    (table) =>
-      isMissing(table.comment) ||
-      table.columns.some((column) => isMissing(column.comment)),
-  );
+  const needsComments = (table: TableInfo) => isMissing(table.comment) ||
+    table.columns.some((column) => isMissing(column.comment));
+  const eligible = chosen.filter(needsComments);
   const pendingTables = eligible.filter(
     (table) =>
       !drafts.some(
         (draft) => draft.schema === table.schema && draft.table === table.name,
       ),
   );
+  const scanTargets = scanReport
+    ? pendingTables.filter((table) => scanReport.entries.some((entry) =>
+        entry.key === tableKey(table) && matchesScanFilter(entry, scanFilter)))
+    : [];
+  const failedTargets = tables.filter((table) =>
+    generationFailures.some((failure) => failure.key === tableKey(table)) &&
+    needsComments(table) &&
+    !drafts.some((draft) => draft.schema === table.schema && draft.table === table.name));
   const missingCount = pendingTables.reduce(
     (total, table) =>
       total +
@@ -113,16 +131,49 @@ export function useDatabaseWorkspace() {
       table.columns.filter((column) => isMissing(column.comment)).length,
     0,
   );
-  const selectedDrafts = drafts.filter((draft) =>
-    chosen.some(
-      (table) => table.schema === draft.schema && table.name === draft.table,
-    ),
-  );
+  const currentDraft = drafts.find((draft) => current && draft.schema === current.schema && draft.table === current.name);
+  const currentPending = current && needsComments(current) && !currentDraft ? [current] : [];
+  const generationTargets = generationScope === "current" ? currentPending
+    : generationScope === "scan" ? scanTargets
+      : generationScope === "failed" ? failedTargets : pendingTables;
+  // 勾选数据库表只控制 Word 导出；AI 建议与写回不依赖勾选状态。
+  const selectedDrafts = drafts;
+  // 只有明确的、可写入的注释建议才参与批量勾选。模型无法确定且返回空值的项不勾选。
+  const isSelectable = (draft: ReviewDraft, id: string) => {
+    const suggestion = draft.suggestions.find((item) => item.id === id);
+    const text = draft.edits[id]?.text ?? "";
+    return !!suggestion && isMissing(suggestion.original) && !!text.trim() &&
+      Array.from(text).length <= 2000;
+  };
+  const countSelectable = (items: ReviewDraft[]) => items.reduce((count, draft) =>
+    count + Object.keys(draft.edits).filter((id) => isSelectable(draft, id)).length, 0);
+  const selectableCount = countSelectable(drafts);
+  const currentSelectableCount = currentDraft ? countSelectable([currentDraft]) : 0;
+  const currentSelectedCount = currentDraft ? Object.entries(currentDraft.edits)
+    .filter(([id, edit]) => edit.selected && isSelectable(currentDraft, id)).length : 0;
   const writeCount = selectedDrafts.reduce(
     (count, draft) =>
-      count + Object.values(draft.edits).filter((edit) => edit.selected).length,
+      count + Object.entries(draft.edits).filter(([id, edit]) => edit.selected && isSelectable(draft, id)).length,
     0,
   );
+  function toggleBulkWriteSelection(scope: "current" | "all") {
+    const scopedIds = new Set((scope === "current" ? (currentDraft ? [currentDraft] : []) : drafts)
+      .map((draft) => draft.id));
+    const total = scope === "current" ? currentSelectableCount : selectableCount;
+    const checked = scope === "current" ? currentSelectedCount : writeCount;
+    if (!total) return;
+    const select = checked !== total;
+    setDrafts((previous) => previous.map((draft) => {
+      if (!scopedIds.has(draft.id)) return draft;
+      return {
+        ...draft,
+        edits: Object.fromEntries(Object.entries(draft.edits).map(([id, edit]) => [
+          id,
+          { ...edit, selected: isSelectable(draft, id) ? select : false },
+        ])),
+      };
+    }));
+  }
   function report(error: unknown) {
     setNotice({ error: true, text: messageOf(error) });
   }
@@ -146,11 +197,15 @@ export function useDatabaseWorkspace() {
     const next = typeof value === "function" ? value(selectionRef.current) : value;
     selectionRef.current = next;
     setSelectedState(next);
+    setScanReport(null);
+    setGenerationFailures([]);
     updateCurrent((item) => ({ ...item, selectedTables: next }));
   }
   function restoreSelection(keys: string[]) {
     selectionRef.current = keys;
     setSelectedState(keys);
+    setScanReport(null);
+    setGenerationFailures([]);
   }
   function setDocumentOptions(value: DocumentOptions) {
     updateCurrent((item) => ({ ...item, name: value.projectName, organization: value.organization, version: value.version, date: value.date, overview: value.overview }));
@@ -164,10 +219,58 @@ export function useDatabaseWorkspace() {
       const created = newProject();
       await updateStore((state) => ({ projects: [...state.projects, created], activeProjectId: created.id }));
       restoreSelection([]);
+      setProjectSessionReady(false);
+      setProjectOpen(true);
     });
   }
+  async function enterProject(projectId: string) {
+    const currentProject = projectStoreRef.current.projects.find((item) => item.id === projectId);
+    if (!currentProject?.name.trim()) throw new Error("请先填写并保存项目名称");
+    setProjectSessionReady(true);
+    setProjectOpen(false);
+    if (!currentProject.connectionId) {
+      setConnectOpen(true);
+      return;
+    }
+    const profiles = await command<Preferences>("load_preferences");
+    setPreferences(profiles);
+    const profile = profiles.connections.find((item) => item.id === currentProject.connectionId);
+    if (!profile) {
+      setNotice({ error: true, text: "项目关联的数据库配置已失效，请重新选择数据库连接" });
+      setConnectOpen(true);
+      return;
+    }
+    try {
+      const loaded = await command<TableInfo[] | null>("connect_saved_database", { connectionId: profile.id });
+      if (!loaded) {
+        setNotice({ error: false, text: "已恢复项目数据库设置；请输入一次密码并勾选加密保存，以后可自动连接" });
+        setConnectOpen(true);
+        return;
+      }
+      setTables(loaded);
+      setConnection(`${profile.host}:${profile.port} / ${profile.database}`);
+      setConnectedProfileId(profile.id);
+      const restored = currentProject.selectedTables.filter((key) => loaded.some((item) => tableKey(item) === key));
+      restoreSelection(restored);
+      setActive(loaded[0] ? tableKey(loaded[0]) : "");
+      setSchema("");
+      setScanReport(null);
+      setNotice({ error: false, text: `已自动连接项目数据库 ${profile.database}` });
+    } catch (error) {
+      setNotice({ error: true, text: `项目已打开，但自动连接数据库失败：${messageOf(error)}。可以检查密码或修改连接设置。` });
+      setConnectOpen(true);
+    }
+  }
+  async function saveProject(value: Project) {
+    if (!value.name.trim()) throw new Error("项目名称不能为空");
+    await updateCurrent((item) => ({ ...item, ...value, name: value.name.trim() }));
+    if (!projectSessionReady) await enterProject(value.id);
+  }
   async function switchProject(id: string) {
-    if (id === projectStoreRef.current.activeProjectId) return;
+    if (id === projectStoreRef.current.activeProjectId && projectSessionReady) {
+      setProjectOpen(false);
+      return;
+    }
     await run("切换项目", async () => {
       if (connection) await command("disconnect_database");
       setConnection("");
@@ -180,7 +283,7 @@ export function useDatabaseWorkspace() {
       if (!next) throw new Error("项目不存在");
       await updateStore((state) => ({ ...state, activeProjectId: id }));
       restoreSelection([]);
-      setProjectOpen(false);
+      await enterProject(id);
     });
   }
   async function removeProject(id: string) {
@@ -252,6 +355,7 @@ export function useDatabaseWorkspace() {
         projectStoreRef.current = next;
         setProjectStore(next);
         setProjectReady(true);
+        setProjectOpen(true);
       })
       .catch(report);
     command<TemplateEntry[]>("list_templates").then(setTemplates).catch(report);
@@ -268,12 +372,16 @@ export function useDatabaseWorkspace() {
     options: ConnectionOptions,
     saveConnection: boolean,
     id: string,
+    rememberPassword: boolean,
   ) {
     return await run("连接数据库", async () => {
       const loaded = await command<TableInfo[]>("connect_database", {
         options,
+        credentialId: saveConnection ? id : null,
+        rememberPassword: saveConnection && rememberPassword,
       });
       setTables(loaded);
+      setScanReport(null);
       setConnection(`${options.host}:${options.port} / ${options.database}`);
       setConnectedProfileId(saveConnection ? id : null);
       setDrafts([]);
@@ -284,7 +392,6 @@ export function useDatabaseWorkspace() {
       restoreSelection(restored);
       setActive(loaded[0] ? tableKey(loaded[0]) : "");
       setSchema("");
-      setReview(false);
       setConnectOpen(false);
       await updateCurrent((item) => ({ ...item, connectionId: saveConnection ? id : null, selectedTables: restored }));
       if (saveConnection) {
@@ -308,6 +415,8 @@ export function useDatabaseWorkspace() {
   }
   async function refresh() {
     await run("刷新结构", async () => {
+      setScanReport(null);
+      setGenerationFailures([]);
       const loaded = await command<TableInfo[]>("read_tables", { ids: [] });
       setTables(loaded);
       setDrafts([]);
@@ -318,6 +427,37 @@ export function useDatabaseWorkspace() {
       );
       setNotice({ error: false, text: "已刷新数据库结构，旧注释草稿已清除" });
     });
+  }
+  async function scanMissingComments() {
+    if (!chosen.length) return;
+    await run("扫描已选表注释", async () => {
+      setScanReport(null);
+      const snapshot = [...chosen];
+      // 重新读取真实 PostgreSQL 元数据；扫描不读取业务行、不请求 AI、不修改数据库。
+      const fresh = await command<TableInfo[]>("read_tables", { ids: snapshot.map((table) => table.oid) });
+      if (fresh.length !== snapshot.length || snapshot.some((table) =>
+        !fresh.some((value) => value.oid === table.oid && tableKey(value) === tableKey(table)))) {
+        throw new Error("扫描时发现表已删除或更名，请刷新结构后重新选择");
+      }
+      const latest = new Map(fresh.map((table) => [tableKey(table), table]));
+      const changed = new Set(snapshot.filter((table) =>
+        JSON.stringify(table) !== JSON.stringify(latest.get(tableKey(table)))).map(tableKey));
+      setTables((previous) => previous.map((table) => latest.get(tableKey(table)) ?? table));
+      if (changed.size) {
+        setDrafts((previous) => previous.filter((draft) => !changed.has(tableKey({ schema: draft.schema, name: draft.table }))));
+      }
+      const report = summarizeMissingComments(snapshot.map((table) => latest.get(tableKey(table))!));
+      setScanFilter("missing");
+      setSearch("");
+      setSchema("");
+      setScanReport(report);
+      const first = report.entries.find((entry) => matchesScanFilter(entry, "missing"));
+      if (first) setActive(first.key);
+      if (changed.size) setToast(`扫描完成，${changed.size} 张表的旧 AI 建议已失效`);
+    });
+  }
+  function clearScan() {
+    setScanReport(null);
   }
   async function saveAi(value: AiSettings) {
     await run("保存 AI 设置", async () => {
@@ -340,13 +480,15 @@ export function useDatabaseWorkspace() {
   async function generate() {
     setConfirm(null);
     await run("生成注释建议", async () => {
-      setReview(true);
       setResults([]);
       let done = 0;
-      const failures: string[] = [];
-      for (const table of pendingTables) {
+      let succeeded = 0;
+      const failures: { key: string; label: string; reason: string }[] = [];
+      const targets = [...generationTargets];
+      setGenerationFailures([]);
+      for (const table of targets) {
         if (cancelled.current) break;
-        setBusy(`生成注释 ${done + 1}/${pendingTables.length} · ${table.name}`);
+        setBusy(`生成注释 ${done + 1}/${targets.length} · ${table.name}`);
         try {
           const draft = await command<Draft>("generate_comments", {
             oid: table.oid,
@@ -369,22 +511,59 @@ export function useDatabaseWorkspace() {
               ),
             },
           ]);
+          succeeded++;
         } catch (error) {
-          failures.push(`${table.schema}.${table.name}：${messageOf(error)}`);
+          failures.push({ key: tableKey(table), label: `${table.schema}.${table.name}`, reason: messageOf(error).slice(0, 200) });
         }
         done++;
       }
-      setNotice({
-        error: failures.length > 0,
-        text: `${cancelled.current ? "已停止后续生成；" : ""}已处理 ${done}/${pendingTables.length} 张表${failures.length ? `；${failures.join("；")}` : "，建议等待审阅，尚未写入数据库"}`,
-      });
+      setGenerationFailures(failures);
+      if (failures.length) {
+        setToast(`完成 ${succeeded} 张，失败 ${failures.length} 张，可仅重试失败表`);
+      } else {
+        setToast(`${cancelled.current ? "已停止，" : ""}AI 建议已生成 ${succeeded} 张表，待审阅`);
+      }
+    });
+  }
+  function prepareGenerate(scope: "current" | "selected" | "scan" | "failed") {
+    setGenerationScope(scope);
+    if (ai.baseUrl && ai.model) setConfirm("generate");
+    else setAiOpen(true);
+  }
+  function updateDraft(id: string, target: string, change: { selected?: boolean; text?: string }) {
+    setDrafts((previous) => previous.map((draft) => draft.id === id
+      ? { ...draft, edits: { ...draft.edits, [target]: {
+          ...draft.edits[target], ...change,
+          ...(change.text !== undefined && !change.text.trim() ? { selected: false } : {}),
+        } } }
+      : draft));
+  }
+  function discardDraft(id: string) {
+    setDrafts((previous) => previous.filter((draft) => draft.id !== id));
+  }
+  async function saveManualComment(table: TableInfo, target: string, text: string): Promise<boolean> {
+    return run("保存注释", async () => {
+      const comment = text.trim();
+      if (!comment || Array.from(comment).length > 2000) throw new Error("注释不能为空，且不能超过 2000 字");
+      const result = await command<WriteResult>("save_manual_comment", { expected: table, target, comment });
+      if (result.status !== "committed" || !result.actual) {
+        throw new Error(result.message || "保存结果待核实，请刷新数据库结构后确认");
+      }
+      setTables((previous) => previous.map((item) => tableKey(item) === tableKey(result.actual!) ? result.actual! : item));
+      setDrafts((previous) => previous.filter((draft) => !(draft.schema === table.schema && draft.table === table.name)));
+      setScanReport(null);
+      setGenerationFailures([]);
+      setToast("注释保存成功");
     });
   }
   async function write() {
     setConfirm(null);
     await run("写入数据库注释", async () => {
+      setScanReport(null);
       setResults([]);
       let stopped = false;
+      let committed = 0;
+      let failureMessage = "";
       const plan = selectedDrafts
         .map((draft) => ({
           draft,
@@ -441,15 +620,13 @@ export function useDatabaseWorkspace() {
         }
         if (result.status !== "committed") {
           stopped = true;
+          failureMessage = `${draft.schema}.${draft.table}：${result.message}`;
           break;
         }
+        committed += items.length;
       }
-      setNotice({
-        error: stopped,
-        text: stopped
-          ? "批次已停止。逐表结果见下方，其余表尚未执行；请刷新或重新连接核实。"
-          : "本批次已提交并回读验证",
-      });
+      if (committed) setToast(`成功保存 ${committed} 项注释`);
+      if (stopped) setNotice({ error: true, text: failureMessage || "已停止后续操作，其余表尚未处理。请刷新结构确认实际状态。" });
     });
   }
   async function exportDocument() {
@@ -504,7 +681,6 @@ export function useDatabaseWorkspace() {
         filters: [{ name: "Word 文档", extensions: ["docx"] }],
       });
       if (!path) {
-        setNotice({ error: false, text: "已取消保存" });
         return;
       }
       if (
@@ -516,9 +692,8 @@ export function useDatabaseWorkspace() {
       await writeFile(path, bytes).catch((error) => {
         throw new Error(`文档保存失败：${messageOf(error)}`);
       });
-      setOutputPath(path);
       setExportOpen(false);
-      setNotice({ error: false, text: "Word 文档已保存" });
+      setToast("Word 导出成功");
     });
   }
 
@@ -527,6 +702,7 @@ export function useDatabaseWorkspace() {
     project,
     projects: projectStore.projects,
     projectReady,
+    projectSessionReady,
     projectOpen,
     setProjectOpen,
     templateOpen,
@@ -540,6 +716,7 @@ export function useDatabaseWorkspace() {
     deleteCustomTemplate,
     downloadBuiltinTemplate,
     updateCurrent,
+    saveProject,
     restoreSelection,
     tables,
     setTables,
@@ -553,9 +730,16 @@ export function useDatabaseWorkspace() {
     setSchema,
     search,
     setSearch,
+    scanReport,
+    scanFilter,
+    setScanFilter,
+    scanTargets,
+    scanMissingComments,
+    clearScan,
     busy,
     notice,
     setNotice,
+    toast,
     connectOpen,
     setConnectOpen,
     aiOpen,
@@ -567,15 +751,22 @@ export function useDatabaseWorkspace() {
     setBackground,
     drafts,
     setDrafts,
-    review,
-    setReview,
+    generationScope,
+    generationTargets,
+    generationFailures,
+    failedTargets,
+    currentDraft,
+    currentPending,
+    prepareGenerate,
+    updateDraft,
+    discardDraft,
+    saveManualComment,
     confirm,
     setConfirm,
     sidebar,
     setSidebar,
     documentOptions,
     setDocumentOptions,
-    outputPath,
     results,
     setResults,
     cancelled,
@@ -585,6 +776,10 @@ export function useDatabaseWorkspace() {
     pendingTables,
     missingCount,
     selectedDrafts,
+    selectableCount,
+    currentSelectableCount,
+    currentSelectedCount,
+    toggleBulkWriteSelection,
     writeCount,
     report,
     run,

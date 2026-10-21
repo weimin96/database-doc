@@ -42,6 +42,7 @@ export function ConnectionDialog({
     options: ConnectionOptions,
     save: boolean,
     id: string,
+    rememberPassword: boolean,
   ) => Promise<boolean>;
 }) {
   const [options, setOptions] = useState<ConnectionOptions>({
@@ -54,6 +55,7 @@ export function ConnectionDialog({
   });
   const [savedId, setSavedId] = useState("new");
   const [save, setSave] = useState(true);
+  const [rememberPassword, setRememberPassword] = useState(true);
   useEffect(() => {
     if (!open || !preferredId) return;
     const profile = saved.find((item) => item.id === preferredId);
@@ -88,7 +90,7 @@ export function ConnectionDialog({
         <DialogHeader>
           <DialogTitle>连接 PostgreSQL</DialogTitle>
           <DialogDescription>
-            连接信息保存在本机，密码仅用于本次连接。
+            连接与项目关联；保存密码后使用本地 AES-256-GCM 加密存储，不使用钥匙串。
           </DialogDescription>
         </DialogHeader>
         {error && (
@@ -103,6 +105,7 @@ export function ConnectionDialog({
               options,
               save,
               savedId === "new" ? crypto.randomUUID() : savedId,
+              save && rememberPassword,
             ).then((success) => {
               if (success)
                 setOptions((previous) => ({ ...previous, password: "" }));
@@ -170,10 +173,14 @@ export function ConnectionDialog({
                   label="密码"
                   type="password"
                   autoComplete="off"
+                  placeholder={savedId === "new" ? "请输入数据库密码" : "留空使用已加密保存的密码"}
                   value={options.password}
                   onChange={(event) => update("password", event.target.value)}
                 />
               </div>
+              {savedId !== "new" && (
+                <p className="form-hint">已保存的密码不会回显。旧版钥匙串密码不会自动迁移，首次请重新输入并保存。</p>
+              )}
               <Field>
                 <FieldLabel>SSL 模式</FieldLabel>
                 <Select
@@ -206,6 +213,11 @@ export function ConnectionDialog({
                 />
                 <FieldLabel htmlFor="save-connection">保存连接信息</FieldLabel>
               </Field>
+              {save && <Field orientation="horizontal">
+                <Checkbox id="remember-password" checked={rememberPassword}
+                  onCheckedChange={(value) => setRememberPassword(value === true)} />
+                <FieldLabel htmlFor="remember-password">加密保存数据库密码，供项目自动连接</FieldLabel>
+              </Field>}
             </FieldGroup>
             <DialogFooter>
               <Button

@@ -23,7 +23,7 @@ export function ConfirmationDialog({
     setBackground,
     confirm,
     setConfirm,
-    pendingTables,
+    generationTargets,
     selectedDrafts,
     writeCount,
     generate,
@@ -43,8 +43,8 @@ export function ConfirmationDialog({
           </DialogTitle>
           <DialogDescription>
             {confirm === "generate"
-              ? `向 ${ai.baseUrl} 的 ${ai.model} 发送 ${pendingTables.length} 张表结构及已有注释，不发送业务记录或连接凭据。`
-              : `目标：${connection}。仅写入勾选的 ${writeCount} 项注释，已有注释不覆盖。`}
+              ? `向 ${ai.baseUrl} 的 ${ai.model} 发送 ${generationTargets.length} 张表结构及已有注释，不发送业务记录或连接凭据。`
+              : `目标：${connection}。将保存已勾选的 ${writeCount} 项 AI 注释，不覆盖数据库中已有注释。手动编辑注释可在字段旁直接保存。`}
           </DialogDescription>
         </DialogHeader>
         {confirm === "generate" ? (
@@ -64,7 +64,7 @@ export function ConfirmationDialog({
               <summary>查看发送的表结构</summary>
               <pre className="payload-preview">
                 {JSON.stringify(
-                  pendingTables.map((table) => ({
+                  generationTargets.map((table) => ({
                     schema: table.schema,
                     table: table.name,
                     comment: table.comment,
