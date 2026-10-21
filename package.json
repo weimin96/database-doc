@@ -36,5 +36,9 @@
     "tailwindcss": "^4",
     "typescript": "^5.9",
     "vite": "^7"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "fsevents@2.3.3": true
   }
 }
